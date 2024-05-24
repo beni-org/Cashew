@@ -26,8 +26,27 @@ import 'listItem.dart';
 
 String getChangelogString() {
   return """
+    < 5.3.0
+    Revamped scheduled transactions page: see an extrapolated total average per month or year
+    Copy transaction details to clipboard by tapping/long pressing transaction count in selected transactions app bar
+    Centered bottom navigation bar labels
+    Improve biometric lock workflow and biometric unlock error
+    Collapsible section for upcoming transactions will appear when 3 or more instead of 5
+    Increased decimal precision limit to 12
+    New deep link parameters (A)
+    Added info point about next repetitive transaction will be generated after current marked as paid 
+    Titles with the same category and name are automatically deleted
+    Manual adding/editing of associated title can be configured to subcategory
+    Fix associated titles order priority when recommending title
+    Fix upcoming transactions not marked as paid when notification activated
+    Fix if decimal precision limit empty when entering amount, default to 2 instead of 0
+    Fix unpaid balance correction when 'no color' had incorrect representation
+    Fix adding attachment in initial add transaction steps
+    Fix biometric bypass on error - now only bypass if app first launched from restored backup
+    Improvements to colors and contrast
+    Updated translations
     < 5.2.9
-    Collapsible future transactions list section (if more than 5 transactions in the future)
+    Collapsible future transactions list section (if more than 3 transactions in the future)
     Number pad format setting
     Account selection for homepage pie chart section
     Improved income/expense only selection in homepage pie chart

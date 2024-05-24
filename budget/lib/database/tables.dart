@@ -5,6 +5,7 @@ import 'package:budget/main.dart';
 import 'package:budget/pages/addBudgetPage.dart';
 import 'package:budget/pages/homePage/homePageLineGraph.dart';
 import 'package:budget/pages/objectivesListPage.dart';
+import 'package:budget/pages/settingsPage.dart';
 import 'package:budget/pages/transactionFilters.dart';
 import 'package:budget/pages/transactionsSearchPage.dart';
 import 'package:budget/struct/databaseGlobal.dart';
@@ -1983,9 +1984,7 @@ class FinanceDatabase extends _$FinanceDatabase {
                       associatedTitles.title.isNotIn(excludeTitles))
                   ..groupBy([associatedTitles.title])
                   // Remove duplicate title titles only if not searching categories
-                  ..orderBy(alsoSearchCategories
-                      ? []
-                      : [OrderingTerm.desc(associatedTitles.order)])
+                  ..orderBy([OrderingTerm.desc(associatedTitles.order)])
                   ..limit(limit, offset: offset ?? DEFAULT_OFFSET))
                 .get())
             .map((rows) {
@@ -2612,7 +2611,14 @@ class FinanceDatabase extends _$FinanceDatabase {
     return select(deleteLogs).get();
   }
 
-  Future<bool> createDeleteLog(DeleteLogType type, String deletedPk) async {
+  Future<bool> createDeleteLog(DeleteLogType type, String deletedPk,
+      {Transaction? transaction}) async {
+    if (type == DeleteLogType.Transaction) {
+      Transaction? transactionToDelete =
+          await database.tryGetTransactionFromPk(deletedPk);
+      if (transactionToDelete != null)
+        recentlyDeletedTransactions[deletedPk] = transactionToDelete;
+    }
     await into(deleteLogs).insert(
       DeleteLogsCompanion.insert(
         type: type,
@@ -3120,6 +3126,41 @@ class FinanceDatabase extends _$FinanceDatabase {
         batch.insertAll(wallets, walletsList, mode: InsertMode.replace);
       });
     }
+    return true;
+  }
+
+  Future<bool> fixDuplicateAssociatedTitles() async {
+    List<Map<String, String>> duplicatedTitles = (await customSelect(
+      'SELECT associated_titles.* FROM (SELECT title, category_fk FROM associated_titles GROUP BY title, category_fk HAVING COUNT(*) >= 2) T1 JOIN associated_titles ON T1.title = associated_titles.title AND T1.category_fk = associated_titles.category_fk ORDER BY associated_titles.title, associated_titles."order" DESC',
+      readsFrom: {associatedTitles},
+    ).get())
+        .map((row) {
+      return {
+        "associated_title_pk": row.read<String>('associated_title_pk'),
+        "title": row.read<String>('title')
+      };
+    }).toList();
+
+    Set<String> seenTitles = {};
+    Set<String> titlesToDelete = {};
+
+    for (Map<String, String> entry in duplicatedTitles) {
+      String title = entry['title']!;
+      if (seenTitles.contains(title)) {
+        titlesToDelete.add(entry['associated_title_pk'] ?? "");
+      } else {
+        seenTitles.add(title);
+      }
+    }
+
+    if (duplicatedTitles.length > 0) {
+      await batch((batch) {
+        batch.deleteWhere(
+            associatedTitles, (t) => t.associatedTitlePk.isIn(titlesToDelete));
+      });
+      print("Removed " + duplicatedTitles.length.toString() + " titles");
+    }
+
     return true;
   }
 
@@ -4146,6 +4187,67 @@ class FinanceDatabase extends _$FinanceDatabase {
           ])
           ..limit(limit ?? DEFAULT_LIMIT, offset: offset ?? DEFAULT_OFFSET))
         .watch();
+  }
+
+  Stream<List<TransactionWithCategory>> watchAllTransactionActivityLog() {
+    final $CategoriesTable subCategories = alias(categories, 'subCategories');
+
+    final query = select(transactions).join([
+      innerJoin(
+          categories, categories.categoryPk.equalsExp(transactions.categoryFk)),
+      leftOuterJoin(
+        budgets,
+        budgets.budgetPk.equalsExp(transactions.sharedReferenceBudgetPk),
+      ),
+      leftOuterJoin(
+        objectives,
+        objectives.objectivePk.equalsExp(transactions.objectiveFk),
+      ),
+      leftOuterJoin(subCategories,
+          subCategories.categoryPk.equalsExp(transactions.subCategoryFk)),
+    ])
+      ..orderBy([OrderingTerm.desc(transactions.dateTimeModified)]);
+
+    return query.watch().map((rows) => rows.map((row) {
+          return TransactionWithCategory(
+              category: row.readTable(categories),
+              transaction: row.readTable(transactions),
+              budget: row.readTableOrNull(budgets),
+              objective: row.readTableOrNull(objectives),
+              subCategory: row.readTableOrNull(subCategories));
+        }).toList());
+  }
+
+  Stream<List<TransactionWithCategory>> watchAllTransactionDeleteActivityLog() {
+    final query = select(deleteLogs)
+      ..orderBy([(t) => OrderingTerm.desc(deleteLogs.dateTimeModified)]);
+
+    return query.watch().map(
+          (rows) => rows
+              .map((DeleteLog row) {
+                Transaction? transaction =
+                    recentlyDeletedTransactions[row.entryPk];
+                if (transaction == null) return null;
+                return TransactionWithCategory(
+                  category: TransactionCategory(
+                    categoryPk: "-1",
+                    name: "",
+                    dateCreated: DateTime.now(),
+                    dateTimeModified: null,
+                    order: 0,
+                    income: false,
+                    iconName: "",
+                    colour: "",
+                    emojiIconName: "",
+                  ),
+                  transaction: transaction,
+                );
+              })
+              .where(
+                  (transactionWithCategory) => transactionWithCategory != null)
+              .cast<TransactionWithCategory>()
+              .toList(),
+        );
   }
 
   Stream<List<CategoryWithDetails>> watchAllMainCategoriesWithDetails({
@@ -6896,6 +6998,12 @@ class FinanceDatabase extends _$FinanceDatabase {
         .getSingle();
   }
 
+  Future<Transaction?> tryGetTransactionFromPk(String transactionPk) {
+    return (select(transactions)
+          ..where((t) => t.transactionPk.equals(transactionPk)))
+        .getSingleOrNull();
+  }
+
   Future<List<Transaction>> getTransactionsFromPk(List<String> transactionPks) {
     return (select(transactions)
           ..where((t) => t.transactionPk.isIn(transactionPks)))
@@ -6938,18 +7046,24 @@ class FinanceDatabase extends _$FinanceDatabase {
 
   // titles not belonging to a category should be deleted
   Future<bool> deleteWanderingTitles() async {
-    List<TransactionCategory> allCategories = await getAllCategories();
+    List<TransactionCategory> allCategories =
+        await getAllCategories(includeSubCategories: true);
     List<String> categoryPks =
         allCategories.map((category) => category.categoryPk).toList();
-    List<TransactionAssociatedTitle> wanderingTitles =
-        await (select(associatedTitles)
+
+    Set<String> wanderingTitles = (await (select(associatedTitles)
               ..where((t) => t.categoryFk.isNotIn(categoryPks)))
-            .get();
-    for (TransactionAssociatedTitle title in wanderingTitles) {
-      await deleteAssociatedTitle(title.associatedTitlePk, title.order);
-    }
+            .get())
+        .map((e) => e.associatedTitlePk)
+        .toSet();
+
     if (wanderingTitles.isNotEmpty) {
-      print("Deleted wandering titles (titles without an existing category)");
+      await batch((batch) {
+        batch.deleteWhere(
+            associatedTitles, (t) => t.associatedTitlePk.isIn(wanderingTitles));
+      });
+      print("Deleted wandering titles (titles without an existing category) " +
+          wanderingTitles.length.toString());
       await fixOrderAssociatedTitles();
     }
     return true;

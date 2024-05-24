@@ -231,6 +231,7 @@ class _AddWalletPageState extends State<AddWalletPage> {
   }
 
   void openDecimalPrecisionPopup() async {
+    bool limitReached = false;
     await openBottomSheet(
       context,
       PopupFramework(
@@ -239,23 +240,34 @@ class _AddWalletPageState extends State<AddWalletPage> {
         child: SelectAmountValue(
           enableDecimal: false,
           amountPassed: selectedDecimals.toString(),
-          setSelectedAmount: (amount, _) {
+          setSelectedAmount: (amount, amountString) {
+            if (amountString == "") amount = 2;
             selectedDecimals = amount.toInt();
-            if (amount > 10) {
-              selectedDecimals = 10;
+            if (amount > 12) {
+              selectedDecimals = 12;
+              limitReached = true;
             } else if (amount < 0) {
               selectedDecimals = 0;
             }
             setState(() {});
           },
           next: () async {
-            determineBottomButton();
             Navigator.pop(context);
           },
           nextLabel: "set-amount".tr(),
         ),
       ),
     );
+    if (limitReached)
+      openSnackbar(
+        SnackbarMessage(
+          title: "maximum-precision".tr(),
+          description: "maximum-precision-description".tr(),
+          icon: appStateSettings["outlinedIcons"]
+              ? Symbols.decimal_increase_sharp
+              : Symbols.decimal_increase_rounded,
+        ),
+      );
     determineBottomButton();
   }
 
@@ -883,39 +895,13 @@ class _CorrectBalancePopupState extends State<CorrectBalancePopup> {
               SizedBox(height: 5),
               Builder(builder: (context) {
                 double difference = (enteredAmount - totalWalletAmount);
-                return Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    difference != 0
-                        ? IncomeOutcomeArrow(
-                            isIncome: difference > 0,
-                            width: 15,
-                          )
-                        : Container(),
-                    Flexible(
-                      child: CountNumber(
-                        count: difference.abs(),
-                        duration: Duration(milliseconds: 300),
-                        initialCount: (0),
-                        textBuilder: (number) {
-                          return TextFont(
-                            text: convertToMoney(
-                              Provider.of<AllWallets>(context),
-                              number,
-                              currencyKey: widget.wallet.currency,
-                              decimals: widget.wallet.decimals,
-                              finalNumber: number,
-                            ),
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                            textColor: difference > 0 == true
-                                ? getColor(context, "incomeAmount")
-                                : getColor(context, "expenseAmount"),
-                          );
-                        },
-                      ),
-                    ),
-                  ],
+                return AmountWithColorAndArrow(
+                  showIncomeArrow: true,
+                  totalSpent: difference,
+                  fontSize: 20,
+                  iconSize: 24,
+                  iconWidth: 15,
+                  countNumberDuration: Duration(milliseconds: 300),
                 );
               }),
               SizedBox(height: 8),
